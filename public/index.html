@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Navi-Toll 高速道路 料金・ルート検索</title>
+<style>
+  :root {
+    --ink: #1f2a24;
+    --paper: #f6f3ec;
+    --moss: #4a6354;
+    --moss-deep: #2f4338;
+    --clay: #c4683f;
+    --line: #d8d2c4;
+    --mono: 'JetBrains Mono', 'Courier New', monospace;
+    --serif: 'Georgia', 'Iowan Old Style', serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--mono);
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 20px; margin-bottom: 32px; }
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--moss); margin-bottom: 8px;
+  }
+  h1 {
+    font-family: var(--serif); font-size: 34px; font-weight: 400;
+    margin: 0 0 6px; letter-spacing: -0.01em;
+  }
+  .sub { color: #6b6256; font-size: 13px; }
+
+  .panel {
+    border: 1px solid var(--line); background: #fffdf8;
+    padding: 24px; margin-bottom: 28px;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em;
+    margin: 0 0 16px; color: var(--moss-deep); font-weight: 600;
+  }
+
+  label {
+    display: block; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.12em; color: #8a8071; margin-bottom: 6px;
+  }
+  .input-row {
+    display: flex; gap: 8px; align-items: center; margin-bottom: 14px;
+  }
+  .input-row input {
+    flex: 1; padding: 10px 12px; font-family: var(--mono); font-size: 14px;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    border-radius: 2px;
+  }
+  .input-row input:focus { outline: 2px solid var(--moss); outline-offset: 1px; }
+  .input-row input::placeholder { color: #b3aa9b; }
+  .btn-geo {
+    flex-shrink: 0; background: none; border: 1px solid var(--line);
+    padding: 9px 11px; font-size: 16px; cursor: pointer; border-radius: 2px;
+    color: var(--moss); line-height: 1;
+  }
+  .btn-geo:hover { background: #f0ece3; }
+
+  /* Collapsible origin/destination fields */
+  .field-block { margin-bottom: 14px; }
+  .field-row { display: flex; align-items: center; gap: 8px; }
+  .field-row .input-row { flex: 1; margin-bottom: 0; }
+  .field-value {
+    flex: 1; padding: 10px 12px; font-size: 14px;
+    border: 1px solid var(--line); border-radius: 2px;
+    background: var(--paper); color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .field-value.none { color: #aaa; font-style: italic; }
+  .btn-link {
+    flex-shrink: 0; background: none; border: none; padding: 4px 2px;
+    font-family: var(--mono); font-size: 12px; color: var(--moss);
+    text-decoration: underline; cursor: pointer;
+  }
+  .btn-link:hover { color: var(--moss-deep); }
+
+  /* Copy-ready result line */
+  .copy-row {
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px dashed var(--line);
+  }
+  .copy-row-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: #8a8071; margin-bottom: 8px;
+  }
+  .copy-row-body { display: flex; gap: 8px; align-items: center; }
+  .copy-text {
+    flex: 1; font-family: var(--mono); font-size: 12px;
+    padding: 10px 12px; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 2px; overflow-x: auto; white-space: nowrap; color: var(--ink);
+  }
+  .btn-copy {
+    flex-shrink: 0; font-family: var(--mono); background: none;
+    border: 1px solid var(--line); padding: 9px 14px; font-size: 12px;
+    cursor: pointer; border-radius: 2px; color: var(--moss);
+  }
+  .btn-copy:hover { background: #f0ece3; }
+  .btn-copy.copied { color: var(--moss-deep); border-color: var(--moss); }
+
+  .actions { margin-top: 4px; }
+  button.primary {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em;
+    text-transform: uppercase; padding: 11px 28px; cursor: pointer;
+    background: var(--moss-deep); color: var(--paper); border: none;
+    border-radius: 2px; transition: background 0.15s;
+  }
+  button.primary:hover { background: var(--moss); }
+  button.primary:disabled { background: #aaa; cursor: not-allowed; }
+
+  #status {
+    font-size: 12px; color: var(--moss); margin-top: 10px; min-height: 18px;
+  }
+  #status.error { color: #b94040; }
+
+  /* Map */
+  #mapWrap {
+    margin-bottom: 28px; display: none;
+    border: 1px solid var(--line);
+  }
+  #map { width: 100%; height: 420px; }
+  @media (max-width: 600px) { #map { height: 280px; } }
+
+  /* Result card */
+  #resultWrap { display: none; }
+  .result-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+  }
+  @media (max-width: 520px) { .result-grid { grid-template-columns: 1fr; } }
+
+  .result-row {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  .result-row:last-child { border-bottom: none; }
+  .result-row.span2 {
+    grid-column: 1 / -1;
+  }
+  .result-icon { font-size: 18px; flex-shrink: 0; width: 26px; text-align: center; }
+  .result-body { flex: 1; min-width: 0; }
+  .result-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: #8a8071; margin-bottom: 2px;
+  }
+  .result-value {
+    font-size: 16px; font-weight: 600; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .result-value.toll { color: var(--clay); }
+  .result-value.none { color: #aaa; font-weight: 400; font-style: italic; }
+
+  .btn-copy-mini {
+    align-self: center; flex-shrink: 0; background: none; border: 1px solid var(--line);
+    padding: 5px 8px; font-size: 13px; cursor: pointer; border-radius: 2px;
+    color: var(--moss); line-height: 1;
+  }
+  .btn-copy-mini:hover { background: #f0ece3; }
+  .btn-copy-mini.copied { color: var(--moss-deep); border-color: var(--moss); }
+
+  /* Toll road chips */
+  .toll-roads-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .toll-chip {
+    font-size: 11px; padding: 3px 8px;
+    border: 1px solid var(--moss); color: var(--moss);
+    border-radius: 2px; white-space: nowrap;
+  }
+
+  /* Skeleton loader */
+  .skeleton {
+    background: linear-gradient(90deg, #e8e4dc 25%, #f0ece4 50%, #e8e4dc 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 2px; height: 18px; margin: 4px 0;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* File drop zone */
+  .drop-zone-wrap {
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px dashed var(--line);
+  }
+  .drop-zone-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: #8a8071; margin-bottom: 8px;
+  }
+  .drop-zone {
+    border: 2px dashed var(--line); border-radius: 2px;
+    padding: 18px 16px; text-align: center; cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    background: var(--paper);
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--moss); background: #f0ece3;
+  }
+  .drop-zone-icon { font-size: 22px; display: block; margin-bottom: 6px; }
+  .drop-zone-text { font-size: 13px; color: var(--ink); }
+  .drop-zone-text .btn-file-pick {
+    color: var(--moss); text-decoration: underline; cursor: pointer;
+    font-size: 13px; letter-spacing: normal; text-transform: none;
+    display: inline; margin: 0;
+  }
+  .drop-zone-hint { font-size: 11px; color: #aaa; margin-top: 4px; }
+  .drop-zone.processing { opacity: 0.6; pointer-events: none; }
+
+  /* Coordinate picker */
+  #coordPickerWrap {
+    margin-top: 10px; display: none;
+  }
+  .coord-picker-header {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--moss-deep); margin-bottom: 6px; font-weight: 600;
+  }
+  .coord-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 12px; border: 1px solid var(--line);
+    margin-bottom: 4px; cursor: pointer; background: #fffdf8;
+    border-radius: 2px; transition: background 0.1s, border-color 0.1s;
+  }
+  .coord-item:hover { background: #f0ece3; border-color: var(--moss); }
+  .coord-item-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+  .coord-item-body { flex: 1; min-width: 0; }
+  .coord-item-value { font-size: 13px; font-weight: 600; color: var(--ink); }
+  .coord-item-context {
+    font-size: 11px; color: #8a8071; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .coord-none { font-size: 12px; color: #aaa; padding: 8px 12px; line-height: 1.8; }
+  .coord-none .btn-link { font-size: 12px; margin-left: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Navi-Toll · NAVITIME-powered · Japan</div>
+    <h1>高速道路 料金・ルート検索</h1>
+    <p class="sub">出発地と目的地を入力すると、ETC料金・所要時間・入口/出口ICを表示します。</p>
+  </header>
+
+  <div class="panel">
+    <h2>ルート入力</h2>
+
+    <label>出発地</label>
+    <div class="field-block" id="originBlock">
+      <div class="field-row">
+        <div class="field-value" id="originSummaryValue">—</div>
+        <div class="input-row" id="originInputRow" style="display:none;">
+          <input type="text" id="originInput" placeholder="住所・地名・施設名" autocomplete="off">
+          <button class="btn-geo" id="originGeoBtn" title="現在地を使用">📍</button>
+        </div>
+        <button class="btn-link" id="originToggleBtn">変更</button>
+      </div>
+    </div>
+
+    <label>目的地</label>
+    <div class="field-block" id="destBlock">
+      <div class="field-row">
+        <div class="field-value none" id="destSummaryValue">ドキュメントをアップロードすると自動入力されます</div>
+        <div class="input-row" id="destInputRow" style="display:none;">
+          <input type="text" id="destInput" placeholder="住所・地名・施設名" autocomplete="off">
+          <button class="btn-geo" id="destGeoBtn" title="現在地を使用">📍</button>
+        </div>
+        <button class="btn-link" id="destToggleBtn">入力</button>
+      </div>
+    </div>
+
+    <div class="drop-zone-wrap">
+      <div class="drop-zone-label">ドキュメントから目的地を取得</div>
+      <div class="drop-zone" id="dropZone">
+        <span class="drop-zone-icon">📄</span>
+        <div class="drop-zone-text">
+          ファイルをドラッグ&amp;ドロップ または <span class="btn-file-pick" id="filePickBtn">ファイルを選択</span>
+        </div>
+        <div class="drop-zone-hint">PDF · Word (.docx) · Excel (.xlsx) · テキスト</div>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.xlsx,.xls,.txt,.csv" style="display:none">
+    </div>
+
+    <div id="coordPickerWrap">
+      <div class="coord-picker-header" id="coordPickerHeader">座標を選択してください</div>
+      <div id="coordList"></div>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="searchBtn">ルート検索</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="mapWrap">
+    <div id="map"></div>
+  </div>
+
+  <div id="resultWrap">
+    <div class="panel">
+      <h2>検索結果</h2>
+      <div class="result-grid" id="resultGrid">
+        <div class="result-row">
+          <div class="result-icon">🛣</div>
+          <div class="result-body">
+            <div class="result-label">高速 入口 IC</div>
+            <div class="result-value" id="resEntryIC">—</div>
+          </div>
+          <button class="btn-copy-mini" data-copy-target="resEntryIC" title="コピー">📋</button>
+        </div>
+        <div class="result-row">
+          <div class="result-icon">🛣</div>
+          <div class="result-body">
+            <div class="result-label">高速 出口 IC</div>
+            <div class="result-value" id="resExitIC">—</div>
+          </div>
+          <button class="btn-copy-mini" data-copy-target="resExitIC" title="コピー">📋</button>
+        </div>
+        <div class="result-row">
+          <div class="result-icon">📏</div>
+          <div class="result-body">
+            <div class="result-label">距離</div>
+            <div class="result-value" id="resDistance">—</div>
+          </div>
+          <button class="btn-copy-mini" data-copy-target="resDistance" title="コピー">📋</button>
+        </div>
+        <div class="result-row">
+          <div class="result-icon">⏱</div>
+          <div class="result-body">
+            <div class="result-label">所要時間</div>
+            <div class="result-value" id="resDuration">—</div>
+          </div>
+          <button class="btn-copy-mini" data-copy-target="resDuration" title="コピー">📋</button>
+        </div>
+        <div class="result-row span2">
+          <div class="result-icon">💰</div>
+          <div class="result-body">
+            <div class="result-label">ETC 料金</div>
+            <div class="result-value toll" id="resToll">—</div>
+          </div>
+          <button class="btn-copy-mini" data-copy-target="resToll" title="コピー">📋</button>
+        </div>
+        <div class="result-row span2" id="tollRoadsRow" style="display:none;">
+          <div class="result-icon">🗺</div>
+          <div class="result-body">
+            <div class="result-label">経由（推定）</div>
+            <div class="toll-roads-wrap" id="resTollRoads"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="copy-row">
+        <div class="copy-row-label">コピー用テキスト</div>
+        <div class="copy-row-body">
+          <code class="copy-text" id="copyText">—</code>
+          <button class="btn-copy" id="copyBtn">📋 コピー</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/main.js"></script>
+<script>
+  window.initGoogleMaps = function() {
+    window._googleMapsReady = true;
+    if (window._onGoogleMapsReady) window._onGoogleMapsReady();
+  };
+</script>
+</body>
+</html>

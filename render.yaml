@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: navi-toll
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GOOGLE_MAPS_KEY
+        sync: false
+      - key: COMPANY_ADDRESS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NAVITIME_API_KEY
+        sync: false
