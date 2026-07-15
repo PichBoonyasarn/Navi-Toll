@@ -37,6 +37,10 @@ const RE_JA_DMS = /(?:北緯|緯度)\s*[:：]?\s*(\d+)\s*度\s*(\d+)\s*分\s*([\
 // The N/E direction letter is optional — some inspection-form PDFs print
 // bare "34°53′37.33″ 135°12′14.98″" with no suffix, and since this tool is
 // Japan-only, a missing direction always means North/East anyway.
+// The direction letter can also come *before* the digits instead of after —
+// e.g. a bridge inspection form's "位置情報" field OCR'd as
+// "N35°25′49.4″ E136°45′00.7″" — so both a leading and trailing group are
+// matched and the code below takes whichever one fired.
 // The seconds mark also accepts two consecutive prime characters (′′) —
 // NFKC normalization (applied below) decomposes a real ″ DOUBLE PRIME into
 // exactly that, so a literal ″ never survives to reach this regex.
@@ -44,7 +48,7 @@ const RE_JA_DMS = /(?:北緯|緯度)\s*[:：]?\s*(\d+)\s*度\s*(\d+)\s*分\s*([\
 // (e.g. OCR'd site maps read as "北緯 37°22′36.4″ 東経 139°15′30.2″") — the
 // 東経/経度 label sits *between* the two DMS groups, not just before the
 // whole match, so it has to be part of the connector, not a separate prefix.
-const RE_EN_DMS = /(?:北緯|緯度)?\s*(\d+)[°˚]\s*(\d+)[′']\s*([\d.]+)(?:[″"]|[′']{2})\s*([NS])?\s*[,\s]*(?:東経|経度)?\s*(\d+)[°˚]\s*(\d+)[′']\s*([\d.]+)(?:[″"]|[′']{2})\s*([EW])?/g;
+const RE_EN_DMS = /(?:北緯|緯度)?\s*([NS])?\s*(\d+)[°˚]\s*(\d+)[′']\s*([\d.]+)(?:[″"]|[′']{2})\s*([NS])?\s*[,\s]*(?:東経|経度)?\s*([EW])?\s*(\d+)[°˚]\s*(\d+)[′']\s*([\d.]+)(?:[″"]|[′']{2})\s*([EW])?/g;
 
 // Pattern 3 — Labeled decimal: 緯度: 35.6895 / 経度: 139.6917  (or lat/lon/latitude/longitude)
 const RE_LABELED = /(?:緯度|lat(?:itude)?)\s*[:：]\s*([-\d.]+)\s*[\/,、\s]+(?:経度|lon(?:gitude)?|lng)\s*[:：]\s*([-\d.]+)/gi;
@@ -87,8 +91,8 @@ function extractCoordinates(rawText) {
   // 2. English DMS
   const re2 = new RegExp(RE_EN_DMS.source, 'g');
   while ((m = re2.exec(text)) !== null) {
-    const lat = dmsToDecimal(m[1], m[2], m[3], m[4]);
-    const lng = dmsToDecimal(m[5], m[6], m[7], m[8]);
+    const lat = dmsToDecimal(m[2], m[3], m[4], m[1] || m[5]);
+    const lng = dmsToDecimal(m[7], m[8], m[9], m[6] || m[10]);
     add(lat, lng, m.index, m[0].length);
   }
 
