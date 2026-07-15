@@ -62,6 +62,26 @@ const RE_BARE = /\b((?:2[4-9]|[34]\d|4[0-6])\.\d{4,})\s*[,、]\s*((?:12[2-9]|1[3
 // Pattern 6 — Google Maps URL: @35.6895,139.6917
 const RE_GMAPS = /@((?:2[4-9]|[34]\d|4[0-6])\.\d{4,}),((?:12[2-9]|1[3-4]\d|15[0-4])\.\d{4,})/g;
 
+// Pattern 7 — Bare decimal pair, longitude first: 139.6917, 35.6895
+// Some sources (GeoJSON exports, GIS tools) write [lng, lat] order instead of
+// Japan's usual lat-first convention. Safe to match independently rather than
+// making order optional in Pattern 5 — the lat range (24-46) and lng range
+// (122-154) never overlap, so there's no ambiguity about which number is which.
+const RE_BARE_LNG_FIRST = /\b((?:12[2-9]|1[3-4]\d|15[0-4])\.\d{4,})\s*[,、]\s*((?:2[4-9]|[34]\d|4[0-6])\.\d{4,})\b/g;
+
+// Pattern 8 — English DM (degree-minute, no seconds): 35°25.8'N 136°45.0'E
+// Some GPS units and mobile-captured locations report only minutes, not full
+// DMS. The negative lookaheads after each minute value are required: without
+// them, this pattern would also match the first two components of a full DMS
+// value like "35°41'22"N" (i.e. mistake it for 35°41' and silently drop the
+// 22" seconds, a ~1.5km position error) — the lookahead rejects a match here
+// whenever what immediately follows looks like a seconds component.
+const RE_EN_DM = /(?:北緯|緯度)?\s*([NS])?\s*(\d+)[°˚]\s*([\d.]+)[′'](?!\s*[\d.]*\s*(?:[″"]|[′']{2}))\s*([NS])?\s*[,\s]*(?:東経|経度)?\s*([EW])?\s*(\d+)[°˚]\s*([\d.]+)[′'](?!\s*[\d.]*\s*(?:[″"]|[′']{2}))\s*([EW])?/g;
+
+// Pattern 9 — Japanese DM (degree-minute, no seconds): 北緯35度25.8分 東経136度45.0分
+// Same rationale and same seconds-lookahead guard as Pattern 8.
+const RE_JA_DM = /(?:北緯|緯度)\s*[:：]?\s*(\d+)\s*度\s*([\d.]+)\s*分(?!\s*[\d.]*\s*秒)\s*[、,\s]*(?:東経|経度)\s*[:：]?\s*(\d+)\s*度\s*([\d.]+)\s*分(?!\s*[\d.]*\s*秒)/g;
+
 function extractCoordinates(rawText) {
   const text = normalize(rawText);
   const results = [];
@@ -122,7 +142,29 @@ function extractCoordinates(rawText) {
     add(parseFloat(m[1]), parseFloat(m[2]), m.index, m[0].length);
   }
 
-  // 7. Label proximity — some multi-page inspection-form PDFs flatten their
+  // 7. Bare decimal pair, longitude first
+  const re7 = new RegExp(RE_BARE_LNG_FIRST.source, 'g');
+  while ((m = re7.exec(text)) !== null) {
+    add(parseFloat(m[2]), parseFloat(m[1]), m.index, m[0].length);
+  }
+
+  // 8. English DM (degree-minute, no seconds)
+  const re8 = new RegExp(RE_EN_DM.source, 'g');
+  while ((m = re8.exec(text)) !== null) {
+    const lat = dmsToDecimal(m[2], m[3], 0, m[1] || m[4]);
+    const lng = dmsToDecimal(m[6], m[7], 0, m[5] || m[8]);
+    add(lat, lng, m.index, m[0].length);
+  }
+
+  // 9. Japanese DM (degree-minute, no seconds)
+  const re9 = new RegExp(RE_JA_DM.source, 'g');
+  while ((m = re9.exec(text)) !== null) {
+    const lat = dmsToDecimal(m[1], m[2], 0, '北');
+    const lng = dmsToDecimal(m[3], m[4], 0, '東');
+    add(lat, lng, m.index, m[0].length);
+  }
+
+  // 10. Label proximity — some multi-page inspection-form PDFs flatten their
   // table layout so the label and value end up far apart, duplicated, or
   // tab-separated instead of adjacent (e.g. "経度 経度\t0137.454318 ...").
   // Instead of requiring strict adjacency, scan forward from each label
@@ -135,7 +177,7 @@ function extractCoordinates(rawText) {
     add(latHit.value, lonHit.value, start, end - start);
   }
 
-  // 8. Japan Plane Rectangular Coordinate System (平面直角座標系) — a genuinely
+  // 11. Japan Plane Rectangular Coordinate System (平面直角座標系) — a genuinely
   // different coordinate system (meters from one of 19 zone origins, not
   // degrees) that appears in some bridge/civil-engineering inspection forms.
   const planeRect = findPlaneRectangularCoords(text);
@@ -434,3 +476,5 @@ router.post('/', upload.single('file'), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.extractCoordinates = extractCoordinates;
+module.exports.extractText = extractText;
