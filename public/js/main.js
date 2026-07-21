@@ -226,7 +226,7 @@ async function geocodeAddress(address) {
 
 // ── File upload & coordinate picker ──────────────────────────────────────────
 
-function renderCoordPicker(coords, filename) {
+function renderCoordPicker(coords, filename, ocrFailed) {
   const wrap = document.getElementById('coordPickerWrap');
   const header = document.getElementById('coordPickerHeader');
   const list = document.getElementById('coordList');
@@ -234,13 +234,27 @@ function renderCoordPicker(coords, filename) {
   wrap.style.display = 'block';
 
   if (!coords || coords.length === 0) {
-    header.textContent = `${filename} — 座標が見つかりませんでした`;
-    list.innerHTML = `
-      <div class="coord-none">
-        このファイルから緯度・経度を自動検出できませんでした。
-        <button class="btn-link" id="manualEntryHintBtn">目的地を直接入力する</button>
-      </div>
-    `;
+    if (ocrFailed) {
+      // The file had no usable text layer and every OCR attempt came back
+      // empty (quota exhausted or a transient API error) — distinct from
+      // "OCR ran fine but genuinely found no coordinates", since retrying
+      // is the right next step here, not assuming the file has no location.
+      header.textContent = `${filename} — 座標の読み取りに失敗しました`;
+      list.innerHTML = `
+        <div class="coord-none">
+          OCR処理に失敗しました（Gemini APIの利用上限、または一時的なエラーの可能性があります）。しばらくしてからもう一度お試しください。
+          <button class="btn-link" id="manualEntryHintBtn">目的地を直接入力する</button>
+        </div>
+      `;
+    } else {
+      header.textContent = `${filename} — 座標が見つかりませんでした`;
+      list.innerHTML = `
+        <div class="coord-none">
+          このファイルから緯度・経度を自動検出できませんでした。
+          <button class="btn-link" id="manualEntryHintBtn">目的地を直接入力する</button>
+        </div>
+      `;
+    }
     document.getElementById('manualEntryHintBtn').addEventListener('click', () => expandField('dest'));
     return;
   }
@@ -299,7 +313,7 @@ async function uploadFile(file) {
     const res = await fetch('/api/parse-document', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'ファイルの解析に失敗しました');
-    renderCoordPicker(data.coordinates, data.filename);
+    renderCoordPicker(data.coordinates, data.filename, data.ocrFailed);
     renderExtractedText(data.extractedText || '');
     setStatus('');
   } catch (err) {

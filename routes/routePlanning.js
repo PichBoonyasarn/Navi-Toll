@@ -19,6 +19,39 @@ function navitimeHeaders() {
   return { 'X-RapidAPI-Key': NAVITIME_API_KEY, 'X-RapidAPI-Host': NAVITIME_HOST };
 }
 
+// Returns the JST wall-clock date/time parts for a given instant, independent
+// of the server's own timezone/locale settings.
+function jstParts(date) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+  });
+  return Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+}
+
+// NAVITIME applies real ETC time-of-day discounts (notably the 30% 深夜割引
+// for any toll-road segment travelled between 0:00-4:00 JST) based on the
+// actual departure time of the route. Defaulting to "depart now" means the
+// same route can price ~30% lower or higher purely depending on what time of
+// day someone happens to click search - confirmed live (2026-07-21): a "now"
+// departure that happened to land a long route's arrival just after midnight
+// showed ¥10,130, while pinning departure to a normal daytime hour for the
+// identical route showed ¥14,470, matching NAVITIME's own site and Google
+// Maps (¥14,070 / ¥14,000). Always requesting a fixed 09:00 JST departure
+// (today if it hasn't passed yet, otherwise tomorrow) keeps trips of any
+// realistic length clear of that midnight window, giving a consistent full
+// (undiscounted, "worst case") toll price instead of one that varies with
+// the clock.
+function nextDaytimeDeparture() {
+  const now = new Date();
+  const p = jstParts(now);
+  const target = new Date(Date.UTC(parseInt(p.year, 10), parseInt(p.month, 10) - 1, parseInt(p.day, 10)));
+  if (parseInt(p.hour, 10) >= 9) target.setUTCDate(target.getUTCDate() + 1);
+  const yyyy = target.getUTCFullYear();
+  const mm = String(target.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(target.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}T09:00`;
+}
+
 async function computeLeg(origin, destination) {
   return withRetry(async () => {
     const params = new URLSearchParams({
@@ -27,6 +60,8 @@ async function computeLeg(origin, destination) {
       // turn_by_turn: includes interchange/exit names on route points.
       // etc=use: ETC-specific toll pricing (Japan's near-universal electronic
       // toll system) - same intent as Google's tollPasses: ['JP_ETC'].
+      // start_time: see nextDaytimeDeparture() above - pins the fare to a
+      // discount-free daytime departure instead of "now".
       // No `shape` param here - confirmed via live testing (2026-07-06) that
       // this RapidAPI wrapping's route_car doesn't have one (absent from its
       // own Params list); route geometry is a separate shape_car call below.
@@ -34,6 +69,7 @@ async function computeLeg(origin, destination) {
       etc: 'use',
       datum: 'wgs84',
       coord_unit: 'degree',
+      start_time: nextDaytimeDeparture(),
     });
     const r = await fetch(`${ROUTE_URL}?${params.toString()}`, { headers: navitimeHeaders() });
     const json = await r.json();
@@ -53,6 +89,10 @@ async function fetchShape(origin, destination) {
       goal: `${destination.lat},${destination.lng}`,
       coord_unit: 'degree',
       datum: 'wgs84',
+      // Same fixed departure as computeLeg, so the drawn path matches the
+      // route the fare was actually computed for (time-of-day traffic
+      // conditions can otherwise steer the route engine differently).
+      start_time: nextDaytimeDeparture(),
     });
     const r = await fetch(`${SHAPE_URL}?${params.toString()}`, { headers: navitimeHeaders() });
     const json = await r.json();

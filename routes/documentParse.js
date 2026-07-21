@@ -14,7 +14,15 @@ const LAT_MIN = 24, LAT_MAX = 46, LNG_MIN = 122, LNG_MAX = 154;
 
 function normalize(text) {
   // NFKC converts full-width digits/punctuation (３５．６) → ASCII (35.6)
-  return text.normalize('NFKC');
+  const nfkc = text.normalize('NFKC');
+  // Gemini's OCR transcription doesn't format tables consistently between
+  // calls — sometimes tab/space-separated, sometimes rendered as markdown
+  // (e.g. "| 緯度 | 33°16′27.91″ | 経度 | 129°53′02.11″ |"). Every pattern
+  // below only tolerates whitespace/commas between a label and its value, so
+  // a literal "|" cell delimiter silently breaks the match. Strip table pipes
+  // and similar box-drawing separators down to plain whitespace so the rest
+  // of the pipeline sees the same shape regardless of how OCR formatted it.
+  return nfkc.replace(/[|│┃‖]/g, ' ');
 }
 
 function dmsToDecimal(deg, min, sec, dir) {
@@ -95,23 +103,44 @@ const RE_DASH_DM_ANCHOR = /([EWNS])\s*(\d{1,3})\s*-?\s*(\d{1,2})\s*([EWNS])\s*(\
 const DASH_SECONDS_PAIR_RE = /-(\d{1,2}(?:\.\d+)?)\s+-(\d{1,2}(?:\.\d+)?)/;
 const DASH_DM_SEARCH_WINDOW = 3000;
 
+function isEastWest(dir) { return dir === 'E' || dir === 'W'; }
+function isNorthSouth(dir) { return dir === 'N' || dir === 'S'; }
+
+// Decides which of two direction-tagged degree values is longitude vs
+// latitude. Trusts the degree magnitude first — Japan's lat (24-46) and lng
+// (122-154) ranges never overlap — since OCR transcriptions have been seen
+// to swap which direction letter goes with which number while still reading
+// the digits themselves correctly (e.g. "経度・緯度 E 37 -43 -15.70 N 139
+// -31 -05.30", where E should mean longitude but is attached to a
+// latitude-range value). Falls back to the direction letter only when
+// magnitude alone can't tell (neither/both values are out of range).
+// Returns null if dir1/dir2 aren't one E/W + one N/S.
+function resolveLngFirst(dir1, deg1, dir2, deg2) {
+  if (!((isEastWest(dir1) && isNorthSouth(dir2)) || (isNorthSouth(dir1) && isEastWest(dir2)))) return null;
+  const deg1Num = parseInt(deg1, 10);
+  const deg2Num = parseInt(deg2, 10);
+  const deg1LooksLng = deg1Num >= LNG_MIN && deg1Num <= LNG_MAX;
+  const deg2LooksLng = deg2Num >= LNG_MIN && deg2Num <= LNG_MAX;
+  const deg1LooksLat = deg1Num >= LAT_MIN && deg1Num <= LAT_MAX;
+  const deg2LooksLat = deg2Num >= LAT_MIN && deg2Num <= LAT_MAX;
+  if (deg1LooksLng && deg2LooksLat) return true;
+  if (deg1LooksLat && deg2LooksLng) return false;
+  return isEastWest(dir1);
+}
+
 function findDashSplitDms(text) {
   const re = new RegExp(RE_DASH_DM_ANCHOR.source, 'g');
   let m;
   while ((m = re.exec(text)) !== null) {
     const [, dir1, deg1, min1, dir2, deg2, min2] = m;
-    const isEW1 = dir1 === 'E' || dir1 === 'W';
-    const isNS1 = dir1 === 'N' || dir1 === 'S';
-    const isEW2 = dir2 === 'E' || dir2 === 'W';
-    const isNS2 = dir2 === 'N' || dir2 === 'S';
-    if (!((isEW1 && isNS2) || (isNS1 && isEW2))) continue;
+    const firstIsLng = resolveLngFirst(dir1, deg1, dir2, deg2);
+    if (firstIsLng === null) continue;
 
     const windowStart = m.index + m[0].length;
     const window = text.slice(windowStart, windowStart + DASH_DM_SEARCH_WINDOW);
     const secMatch = DASH_SECONDS_PAIR_RE.exec(window);
     if (!secMatch) continue;
 
-    const firstIsLng = isEW1;
     const lngDeg = firstIsLng ? deg1 : deg2;
     const lngMin = firstIsLng ? min1 : min2;
     const lngSec = firstIsLng ? secMatch[1] : secMatch[2];
@@ -125,6 +154,39 @@ function findDashSplitDms(text) {
     const lng = dmsToDecimal(lngDeg, lngMin, lngSec, lngDir);
     const end = windowStart + secMatch.index + secMatch[0].length;
     return { lat, lng, index: m.index, length: end - m.index };
+  }
+  return null;
+}
+
+// Pattern 13 — Full hyphen-separated DMS on one line, no table split at all:
+// e.g. "経度・緯度 E 37 -43 -15.70 N 139 -31 -05.30". Seen in OCR
+// transcriptions of the same bridge-inspection template as pattern 12, but
+// here degree, minute, and second for both coordinates land on one
+// contiguous run with no structural table gap to bridge — pattern 12's
+// anchor can't match this shape since it expects the next direction letter
+// immediately after the minute, not a seconds value first.
+const RE_DASH_FULL_DMS = /([EWNS])\s*(\d{1,3})\s*-\s*(\d{1,2})\s*-\s*(\d{1,2}(?:\.\d+)?)\s*([EWNS])\s*(\d{1,3})\s*-\s*(\d{1,2})\s*-\s*(\d{1,2}(?:\.\d+)?)/g;
+
+function findDashFullDms(text) {
+  const re = new RegExp(RE_DASH_FULL_DMS.source, 'g');
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const [, dir1, deg1, min1, sec1, dir2, deg2, min2, sec2] = m;
+    const firstIsLng = resolveLngFirst(dir1, deg1, dir2, deg2);
+    if (firstIsLng === null) continue;
+
+    const lngDeg = firstIsLng ? deg1 : deg2;
+    const lngMin = firstIsLng ? min1 : min2;
+    const lngSec = firstIsLng ? sec1 : sec2;
+    const lngDir = firstIsLng ? dir1 : dir2;
+    const latDeg = firstIsLng ? deg2 : deg1;
+    const latMin = firstIsLng ? min2 : min1;
+    const latSec = firstIsLng ? sec2 : sec1;
+    const latDir = firstIsLng ? dir2 : dir1;
+
+    const lat = dmsToDecimal(latDeg, latMin, latSec, latDir);
+    const lng = dmsToDecimal(lngDeg, lngMin, lngSec, lngDir);
+    return { lat, lng, index: m.index, length: m[0].length };
   }
   return null;
 }
@@ -236,6 +298,12 @@ function extractCoordinates(rawText) {
   const dashDms = findDashSplitDms(text);
   if (dashDms) {
     add(dashDms.lat, dashDms.lng, dashDms.index, dashDms.length);
+  }
+
+  // 13. Full hyphen-separated DMS on one line (no table split)
+  const dashFullDms = findDashFullDms(text);
+  if (dashFullDms) {
+    add(dashFullDms.lat, dashFullDms.lng, dashFullDms.index, dashFullDms.length);
   }
 
   return results.slice(0, 10);
@@ -486,8 +554,14 @@ const OCR_MAX_PAGES = 3;
 // still show the user what was actually read off the page — including when
 // no coordinate matched, since OCR misreads are exactly when a user most
 // needs to see the raw transcription to spot the problem themselves.
+//
+// `ocrFailed` distinguishes "OCR ran and genuinely found no coordinates in
+// what it read" from "every model in ocrImageToText's fallback chain came
+// back empty" (quota exhausted, or a transient API/network error) — the
+// latter looks identical to "this file has no location data" unless the
+// caller is told which one actually happened.
 async function ocrFallbackCoordinates(buffer) {
-  if (!isGeminiConfigured()) return { coordinates: [], text: '' };
+  if (!isGeminiConfigured()) return { coordinates: [], text: '', ocrFailed: false };
   const { PDFParse } = require('pdf-parse');
   const parser = new PDFParse({ data: buffer });
   try {
@@ -497,24 +571,40 @@ async function ocrFallbackCoordinates(buffer) {
     const screenshots = await parser.getScreenshot({ partial: pageNumbers });
 
     const pageTexts = [];
+    let anyPageOcrd = false;
     for (const page of screenshots.pages) {
       if (!page.data) continue;
       const base64 = Buffer.from(page.data).toString('base64');
       const text = await ocrImageToText(base64);
       if (!text) continue;
+      anyPageOcrd = true;
       pageTexts.push(text);
       const coords = extractCoordinates(text);
-      if (coords.length > 0) return { coordinates: coords, text };
+      if (coords.length > 0) return { coordinates: coords, text, ocrFailed: false };
     }
-    return { coordinates: [], text: pageTexts.join('\n\n---\n\n') };
+    return { coordinates: [], text: pageTexts.join('\n\n---\n\n'), ocrFailed: !anyPageOcrd };
   } catch {
-    return { coordinates: [], text: '' };
+    return { coordinates: [], text: '', ocrFailed: true };
   } finally {
     await parser.destroy();
   }
 }
 
-router.post('/', upload.single('file'), async (req, res) => {
+// multer's error-first callback form is used instead of passing
+// upload.single('file') directly as middleware — a LIMIT_FILE_SIZE (or any
+// other multer) error otherwise reaches Express's default error handler,
+// which returns an HTML error page. The frontend always expects JSON, so an
+// HTML response breaks res.json() parsing client-side with a cryptic
+// "Unexpected token '<'" instead of a readable error message.
+router.post('/', (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'ファイルサイズが大きすぎます（20MB以下にしてください）' });
+    }
+    res.status(400).json({ error: `ファイルのアップロードに失敗しました: ${err.message}` });
+  });
+}, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'ファイルが選択されていません' });
 
   const filename = fixFilenameEncoding(req.file.originalname);
@@ -523,14 +613,16 @@ router.post('/', upload.single('file'), async (req, res) => {
     const text = await extractText(req.file.buffer, filename);
     let coordinates = extractCoordinates(text);
     let extractedText = text;
+    let ocrFailed = false;
 
     if (coordinates.length === 0 && path.extname(filename).toLowerCase() === '.pdf') {
       const ocrResult = await ocrFallbackCoordinates(req.file.buffer);
       coordinates = ocrResult.coordinates;
       if (ocrResult.text) extractedText = ocrResult.text;
+      ocrFailed = ocrResult.ocrFailed;
     }
 
-    res.json({ coordinates, filename, extractedText });
+    res.json({ coordinates, filename, extractedText, ocrFailed });
   } catch (err) {
     console.error('documentParse error:', err.message);
     res.status(500).json({ error: `ファイルの解析に失敗しました: ${err.message}` });
