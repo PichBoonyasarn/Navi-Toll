@@ -223,19 +223,29 @@
   .coord-item {
     display: flex; align-items: flex-start; gap: 10px;
     padding: 10px 12px; border: 1px solid var(--line);
-    margin-bottom: 4px; cursor: pointer; background: #fffdf8;
-    border-radius: 2px; transition: background 0.1s, border-color 0.1s;
+    margin-bottom: 4px; cursor: text; background: #fffdf8;
+    border-radius: 2px;
   }
-  .coord-item:hover { background: #f0ece3; border-color: var(--moss); }
   .coord-item-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
   .coord-item-body { flex: 1; min-width: 0; }
-  .coord-item-value { font-size: 13px; font-weight: 600; color: var(--ink); }
+  .coord-item-value { font-size: 13px; font-weight: 600; color: var(--ink); user-select: text; }
   .coord-item-context {
     font-size: 11px; color: #8a8071; margin-top: 2px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .coord-none { font-size: 12px; color: #aaa; padding: 8px 12px; line-height: 1.8; }
   .coord-none .btn-link { font-size: 12px; margin-left: 4px; }
+
+  /* Extracted raw text (pre-conversion) panel */
+  #extractedTextWrap { margin-top: 10px; }
+  #extractedTextWrap .btn-link { padding-left: 0; }
+  .extracted-text {
+    margin: 8px 0 0; padding: 12px; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 2px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 320px; overflow-y: auto;
+  }
 </style>
 </head>
 <body>
@@ -288,6 +298,11 @@
     <div id="coordPickerWrap">
       <div class="coord-picker-header" id="coordPickerHeader">座標を選択してください</div>
       <div id="coordList"></div>
+    </div>
+
+    <div id="extractedTextWrap" style="display:none;">
+      <button class="btn-link" id="extractedTextToggleBtn">抽出テキストを表示</button>
+      <pre class="extracted-text" id="extractedTextBody"></pre>
     </div>
 
     <div class="actions">

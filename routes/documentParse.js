@@ -82,6 +82,53 @@ const RE_EN_DM = /(?:北緯|緯度)?\s*([NS])?\s*(\d+)[°˚]\s*([\d.]+)[′'](?!
 // Same rationale and same seconds-lookahead guard as Pattern 8.
 const RE_JA_DM = /(?:北緯|緯度)\s*[:：]?\s*(\d+)\s*度\s*([\d.]+)\s*分(?!\s*[\d.]*\s*秒)\s*[、,\s]*(?:東経|経度)\s*[:：]?\s*(\d+)\s*度\s*([\d.]+)\s*分(?!\s*[\d.]*\s*秒)/g;
 
+// Pattern 12 — Hyphen-separated degree/minute anchor with seconds split into
+// a structurally separate PDF table, e.g. "E 138 -55 N 37 -21" ... (unrelated
+// form fields) ... "-09.10 -07.00". Seen in the MLIT standard bridge
+// inspection form (点検調書) 位置情報 table: the degree+minute cell and the
+// seconds cell are visually one row but come from two different table
+// objects in the PDF, so pdf-parse's linear text emits them far apart with
+// no shared label nearby. The two seconds values always appear in the same
+// left-to-right order as the degree/minute anchor they belong to, so the
+// anchor's direction letters (not fixed position) decide which is lng/lat.
+const RE_DASH_DM_ANCHOR = /([EWNS])\s*(\d{1,3})\s*-?\s*(\d{1,2})\s*([EWNS])\s*(\d{1,3})\s*-?\s*(\d{1,2})/g;
+const DASH_SECONDS_PAIR_RE = /-(\d{1,2}(?:\.\d+)?)\s+-(\d{1,2}(?:\.\d+)?)/;
+const DASH_DM_SEARCH_WINDOW = 3000;
+
+function findDashSplitDms(text) {
+  const re = new RegExp(RE_DASH_DM_ANCHOR.source, 'g');
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const [, dir1, deg1, min1, dir2, deg2, min2] = m;
+    const isEW1 = dir1 === 'E' || dir1 === 'W';
+    const isNS1 = dir1 === 'N' || dir1 === 'S';
+    const isEW2 = dir2 === 'E' || dir2 === 'W';
+    const isNS2 = dir2 === 'N' || dir2 === 'S';
+    if (!((isEW1 && isNS2) || (isNS1 && isEW2))) continue;
+
+    const windowStart = m.index + m[0].length;
+    const window = text.slice(windowStart, windowStart + DASH_DM_SEARCH_WINDOW);
+    const secMatch = DASH_SECONDS_PAIR_RE.exec(window);
+    if (!secMatch) continue;
+
+    const firstIsLng = isEW1;
+    const lngDeg = firstIsLng ? deg1 : deg2;
+    const lngMin = firstIsLng ? min1 : min2;
+    const lngSec = firstIsLng ? secMatch[1] : secMatch[2];
+    const lngDir = firstIsLng ? dir1 : dir2;
+    const latDeg = firstIsLng ? deg2 : deg1;
+    const latMin = firstIsLng ? min2 : min1;
+    const latSec = firstIsLng ? secMatch[2] : secMatch[1];
+    const latDir = firstIsLng ? dir2 : dir1;
+
+    const lat = dmsToDecimal(latDeg, latMin, latSec, latDir);
+    const lng = dmsToDecimal(lngDeg, lngMin, lngSec, lngDir);
+    const end = windowStart + secMatch.index + secMatch[0].length;
+    return { lat, lng, index: m.index, length: end - m.index };
+  }
+  return null;
+}
+
 function extractCoordinates(rawText) {
   const text = normalize(rawText);
   const results = [];
@@ -183,6 +230,12 @@ function extractCoordinates(rawText) {
   const planeRect = findPlaneRectangularCoords(text);
   if (planeRect) {
     add(planeRect.lat, planeRect.lng, planeRect.index, planeRect.length);
+  }
+
+  // 12. Hyphen degree/minute anchor with seconds split into a separate table
+  const dashDms = findDashSplitDms(text);
+  if (dashDms) {
+    add(dashDms.lat, dashDms.lng, dashDms.index, dashDms.length);
   }
 
   return results.slice(0, 10);
@@ -429,8 +482,12 @@ function fixFilenameEncoding(name) {
 // early page in every real document seen so far.
 const OCR_MAX_PAGES = 3;
 
+// Returns the OCR'd text alongside any coordinates found so the caller can
+// still show the user what was actually read off the page — including when
+// no coordinate matched, since OCR misreads are exactly when a user most
+// needs to see the raw transcription to spot the problem themselves.
 async function ocrFallbackCoordinates(buffer) {
-  if (!isGeminiConfigured()) return [];
+  if (!isGeminiConfigured()) return { coordinates: [], text: '' };
   const { PDFParse } = require('pdf-parse');
   const parser = new PDFParse({ data: buffer });
   try {
@@ -439,17 +496,19 @@ async function ocrFallbackCoordinates(buffer) {
     const pageNumbers = Array.from({ length: pageCount }, (_, i) => i + 1);
     const screenshots = await parser.getScreenshot({ partial: pageNumbers });
 
+    const pageTexts = [];
     for (const page of screenshots.pages) {
       if (!page.data) continue;
       const base64 = Buffer.from(page.data).toString('base64');
       const text = await ocrImageToText(base64);
       if (!text) continue;
+      pageTexts.push(text);
       const coords = extractCoordinates(text);
-      if (coords.length > 0) return coords;
+      if (coords.length > 0) return { coordinates: coords, text };
     }
-    return [];
+    return { coordinates: [], text: pageTexts.join('\n\n---\n\n') };
   } catch {
-    return [];
+    return { coordinates: [], text: '' };
   } finally {
     await parser.destroy();
   }
@@ -463,12 +522,15 @@ router.post('/', upload.single('file'), async (req, res) => {
   try {
     const text = await extractText(req.file.buffer, filename);
     let coordinates = extractCoordinates(text);
+    let extractedText = text;
 
     if (coordinates.length === 0 && path.extname(filename).toLowerCase() === '.pdf') {
-      coordinates = await ocrFallbackCoordinates(req.file.buffer);
+      const ocrResult = await ocrFallbackCoordinates(req.file.buffer);
+      coordinates = ocrResult.coordinates;
+      if (ocrResult.text) extractedText = ocrResult.text;
     }
 
-    res.json({ coordinates, filename });
+    res.json({ coordinates, filename, extractedText });
   } catch (err) {
     console.error('documentParse error:', err.message);
     res.status(500).json({ error: `ファイルの解析に失敗しました: ${err.message}` });

@@ -5,6 +5,12 @@ let selectedDestCoord = null; // set when user picks a coord from a document
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function setStatus(msg, isError) {
   const el = document.getElementById('status');
   el.textContent = msg;
@@ -245,19 +251,28 @@ function renderCoordPicker(coords, filename) {
       <div class="coord-item-icon">📍</div>
       <div class="coord-item-body">
         <div class="coord-item-value">${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}</div>
-        <div class="coord-item-context">${c.context || ''}</div>
+        <div class="coord-item-context">元データ: ${escapeHtml(c.context || '')}</div>
       </div>
     </div>
   `).join('');
 
-  list.querySelectorAll('.coord-item').forEach(el => {
-    el.addEventListener('click', () => {
-      selectCoordItem(coords, parseInt(el.dataset.idx, 10), list);
-    });
-  });
-
-  // Auto-pick the first coordinate found and search immediately — no click required
+  // Auto-pick the first coordinate found and search immediately. The list is
+  // read-only display from here on (not clickable) — users can select/copy
+  // the lat/lng text without accidentally re-triggering a route search.
   selectCoordItem(coords, 0, list);
+}
+
+function renderExtractedText(text) {
+  const wrap = document.getElementById('extractedTextWrap');
+  const body = document.getElementById('extractedTextBody');
+  const toggleBtn = document.getElementById('extractedTextToggleBtn');
+
+  if (!text) { wrap.style.display = 'none'; return; }
+
+  wrap.style.display = 'block';
+  body.textContent = text; // textContent, not innerHTML — this is untrusted file content
+  body.style.display = 'none';
+  toggleBtn.textContent = '抽出テキストを表示';
 }
 
 function selectCoordItem(coords, idx, listEl) {
@@ -285,6 +300,7 @@ async function uploadFile(file) {
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'ファイルの解析に失敗しました');
     renderCoordPicker(data.coordinates, data.filename);
+    renderExtractedText(data.extractedText || '');
     setStatus('');
   } catch (err) {
     setStatus(err.message, true);
@@ -313,6 +329,14 @@ function initFileUpload() {
 
   // Clear selected coord when destination is manually edited
   document.getElementById('destInput').addEventListener('input', () => { selectedDestCoord = null; });
+
+  document.getElementById('extractedTextToggleBtn').addEventListener('click', () => {
+    const body = document.getElementById('extractedTextBody');
+    const btn = document.getElementById('extractedTextToggleBtn');
+    const isHidden = body.style.display === 'none';
+    body.style.display = isHidden ? 'block' : 'none';
+    btn.textContent = isHidden ? '抽出テキストを隠す' : '抽出テキストを表示';
+  });
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
