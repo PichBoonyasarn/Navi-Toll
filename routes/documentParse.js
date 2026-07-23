@@ -7,7 +7,7 @@ const path = require('path');
 const { planeRectangularToLatLon } = require('../lib/planeRectangular');
 const { ocrImageToText, isGeminiConfigured } = require('../lib/geminiOcr');
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // Japan coordinate bounds
 const LAT_MIN = 24, LAT_MAX = 46, LNG_MIN = 122, LNG_MAX = 154;
@@ -32,6 +32,38 @@ function dmsToDecimal(deg, min, sec, dir) {
 
 function validateJapan(lat, lng) {
   return lat >= LAT_MIN && lat <= LAT_MAX && lng >= LNG_MIN && lng <= LNG_MAX;
+}
+
+// Small pad around a single tight regex match for the default context
+// snippet — previously 40/60 chars, which routinely dragged in unrelated
+// neighboring form fields (e.g. "橋梁種別 河川橋 緯度 33°..." — only the
+// middle is the actual coordinate text).
+const CONTEXT_PAD = 8;
+// Gaps between stitched-together pieces (see buildSnippet) above this many
+// chars become an explicit " … " instead of the real text between them —
+// patterns 10-12 reconstruct a coordinate from fragments that can be
+// legitimately thousands of characters apart in the source, and showing
+// that whole span verbatim is exactly what made the raw-data display
+// unreadable.
+const SNIPPET_BRIDGE_GAP = 20;
+
+// Stitches a left-to-right list of {index, length} source fragments into one
+// readable snippet: adjacent fragments (small real gap) are joined with the
+// actual text between them, while fragments separated by a large gap are
+// joined with " … " so a multi-hundred/thousand-char span never gets
+// silently inlined.
+function buildSnippet(text, pieces) {
+  let out = '';
+  let prevEnd = null;
+  for (const p of pieces) {
+    if (prevEnd !== null) {
+      const gap = p.index - prevEnd;
+      out += gap > 0 && gap <= SNIPPET_BRIDGE_GAP ? text.slice(prevEnd, p.index) : ' … ';
+    }
+    out += text.slice(p.index, p.index + p.length);
+    prevEnd = p.index + p.length;
+  }
+  return out;
 }
 
 // Pattern 1 — Japanese DMS: 北緯35度41分22秒 東経139度41分30秒
@@ -152,8 +184,13 @@ function findDashSplitDms(text) {
 
     const lat = dmsToDecimal(latDeg, latMin, latSec, latDir);
     const lng = dmsToDecimal(lngDeg, lngMin, lngSec, lngDir);
-    const end = windowStart + secMatch.index + secMatch[0].length;
-    return { lat, lng, index: m.index, length: end - m.index };
+    const secAbsIndex = windowStart + secMatch.index;
+    const end = secAbsIndex + secMatch[0].length;
+    const snippet = buildSnippet(text, [
+      { index: m.index, length: m[0].length },
+      { index: secAbsIndex, length: secMatch[0].length },
+    ]);
+    return { lat, lng, index: m.index, length: end - m.index, snippet };
   }
   return null;
 }
@@ -196,14 +233,15 @@ function extractCoordinates(rawText) {
   const results = [];
   const seen = new Set();
 
-  const add = (lat, lng, index, len) => {
+  const add = (lat, lng, index, len, snippet) => {
     if (!validateJapan(lat, lng)) return;
     const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
     if (seen.has(key)) return;
     seen.add(key);
-    const start = Math.max(0, index - 40);
-    const end = Math.min(text.length, index + len + 60);
-    const context = text.slice(start, end).replace(/[\r\n\t]+/g, ' ').trim();
+    const raw = snippet !== undefined
+      ? snippet
+      : text.slice(Math.max(0, index - CONTEXT_PAD), Math.min(text.length, index + len + CONTEXT_PAD));
+    const context = raw.replace(/[\r\n\t]+/g, ' ').trim();
     results.push({ lat, lng, context });
   };
 
@@ -283,7 +321,13 @@ function extractCoordinates(rawText) {
   if (latHit && lonHit) {
     const start = Math.min(latHit.index, lonHit.index);
     const end = Math.max(latHit.index + latHit.length, lonHit.index + lonHit.length);
-    add(latHit.value, lonHit.value, start, end - start);
+    const pieces = [
+      { index: latHit.labelIndex, length: latHit.labelLength },
+      { index: latHit.index, length: latHit.length },
+      { index: lonHit.labelIndex, length: lonHit.labelLength },
+      { index: lonHit.index, length: lonHit.length },
+    ].sort((a, b) => a.index - b.index);
+    add(latHit.value, lonHit.value, start, end - start, buildSnippet(text, pieces));
   }
 
   // 11. Japan Plane Rectangular Coordinate System (平面直角座標系) — a genuinely
@@ -291,13 +335,13 @@ function extractCoordinates(rawText) {
   // degrees) that appears in some bridge/civil-engineering inspection forms.
   const planeRect = findPlaneRectangularCoords(text);
   if (planeRect) {
-    add(planeRect.lat, planeRect.lng, planeRect.index, planeRect.length);
+    add(planeRect.lat, planeRect.lng, planeRect.index, planeRect.length, planeRect.snippet);
   }
 
   // 12. Hyphen degree/minute anchor with seconds split into a separate table
   const dashDms = findDashSplitDms(text);
   if (dashDms) {
-    add(dashDms.lat, dashDms.lng, dashDms.index, dashDms.length);
+    add(dashDms.lat, dashDms.lng, dashDms.index, dashDms.length, dashDms.snippet);
   }
 
   // 13. Full hyphen-separated DMS on one line (no table split)
@@ -362,7 +406,13 @@ function findPlaneRectangularCoords(text) {
   const latLon = planeRectangularToLatLon(x.value, y.value, zone);
   if (!latLon) return null;
 
-  return { lat: latLon.lat, lng: latLon.lng, index: x.index, length: (y.index + y.length) - x.index };
+  const snippet = buildSnippet(text, [
+    { index: zoneIdx, length: zoneMatch.index + zoneMatch[0].length },
+    { index: x.index, length: x.length },
+    { index: y.index, length: y.length },
+  ]);
+
+  return { lat: latLon.lat, lng: latLon.lng, index: x.index, length: (y.index + y.length) - x.index, snippet };
 }
 
 const LABEL_PROXIMITY_WINDOW = 300;
@@ -385,7 +435,10 @@ function findNearbyLabeledValue(text, keywords, isLon) {
       while ((m = numRe.exec(window)) !== null) {
         const value = parseFloat(m[0]);
         if (value >= lo && value <= hi) {
-          return { value, index: searchFrom + m.index, length: m[0].length };
+          return {
+            value, index: searchFrom + m.index, length: m[0].length,
+            labelIndex: kwIndex, labelLength: kw.length,
+          };
         }
       }
     }
@@ -507,6 +560,28 @@ async function extractExcel(buffer) {
   return flatText;
 }
 
+// pdf-parse's PDFParse never sets cMapUrl/standardFontDataUrl, so pdfjs-dist
+// can't load the external CMap a CID-keyed font needs to decode its glyphs.
+// Confirmed live (2026-07-23): two real 香美町 bridge-inspection PDFs use
+// exactly this font setup, and without these options BOTH getText() (empty
+// page 1) and getScreenshot() (blank table cells, confirmed by rendering and
+// visually inspecting the PNG) silently lose all text in that font — not
+// just missing coordinates, the whole page reads as empty. Providing the
+// CMap/font data pdfjs-dist already ships in its own package fixes both.
+// Paths must end in "/" (checked literally by pdfjs-dist, not OS-aware) and
+// must be plain filesystem paths, not file:// URLs — pdfjs-dist's Node
+// reader factory passes the string straight to fs.readFile(), which doesn't
+// parse "file://" prefixes the way a URL object would.
+const PDFJS_DIST_DIR = path.dirname(require.resolve('pdfjs-dist/package.json'));
+const PDF_CMAP_URL = path.join(PDFJS_DIST_DIR, 'cmaps') + '/';
+const PDF_STANDARD_FONT_DATA_URL = path.join(PDFJS_DIST_DIR, 'standard_fonts') + '/';
+const PDF_FONT_LOAD_OPTIONS = {
+  cMapUrl: PDF_CMAP_URL,
+  cMapPacked: true,
+  standardFontDataUrl: PDF_STANDARD_FONT_DATA_URL,
+  useSystemFonts: true,
+};
+
 async function extractText(buffer, filename) {
   const ext = path.extname(filename).toLowerCase();
 
@@ -518,7 +593,7 @@ async function extractText(buffer, filename) {
   if (ext === '.pdf') {
     // pdf-parse v2 replaced the old callable-function API with a class
     const { PDFParse } = require('pdf-parse');
-    const parser = new PDFParse({ data: buffer });
+    const parser = new PDFParse({ data: buffer, ...PDF_FONT_LOAD_OPTIONS });
     try {
       const result = await parser.getText();
       return result.text;
@@ -563,7 +638,7 @@ const OCR_MAX_PAGES = 3;
 async function ocrFallbackCoordinates(buffer) {
   if (!isGeminiConfigured()) return { coordinates: [], text: '', ocrFailed: false };
   const { PDFParse } = require('pdf-parse');
-  const parser = new PDFParse({ data: buffer });
+  const parser = new PDFParse({ data: buffer, ...PDF_FONT_LOAD_OPTIONS });
   try {
     const info = await parser.getInfo();
     const pageCount = Math.min(OCR_MAX_PAGES, info.total || 1);
@@ -600,7 +675,7 @@ router.post('/', (req, res, next) => {
   upload.single('file')(req, res, (err) => {
     if (!err) return next();
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'ファイルサイズが大きすぎます（20MB以下にしてください）' });
+      return res.status(413).json({ error: 'ファイルサイズが大きすぎます（50MB以下にしてください）' });
     }
     res.status(400).json({ error: `ファイルのアップロードに失敗しました: ${err.message}` });
   });

@@ -230,8 +230,9 @@
   .coord-item-body { flex: 1; min-width: 0; }
   .coord-item-value { font-size: 13px; font-weight: 600; color: var(--ink); user-select: text; }
   .coord-item-context {
-    font-size: 11px; color: #8a8071; margin-top: 2px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; color: #8a8071; margin-top: 4px;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+    max-height: 4.5em; overflow-y: auto;
   }
   .coord-none { font-size: 12px; color: #aaa; padding: 8px 12px; line-height: 1.8; }
   .coord-none .btn-link { font-size: 12px; margin-left: 4px; }
